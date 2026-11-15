@@ -1,3 +1,8 @@
+# 星缘编语
+![C++](https://img.shields.io/badge/Language-C++17-blue.svg)
+![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Linux%20%7C%20Windows-green.svg)
+![License](https://img.shields.io/badge/License-XingYuan--Custom-orange.svg)
+
 ## 🚀 快速开始
 
 > ⚠️ **注意**：本项目目前仅在 **Android (Termux)** 环境下进行过完整编译与测试。由于底层代码可能包含特定系统调用，PC 端（Windows/Linux）目前处于**未测试状态**，欢迎有环境的开发者在 PC 端尝试并提交 Issue/PR。
@@ -58,9 +63,7 @@
 2. 你需要安装 MinGW 或 MSYS2 作为 C++ 编译环境，并确保安装了 OpenSSL 库。
 3. 由于开发者暂无 Windows 测试环境，如果你在运行 XYBY.bat 时遇到报错，请提交 Issue 告诉我们。
 
-![C++](https://img.shields.io/badge/Language-C++17-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Linux%20%7C%20Windows-green.svg)
-![License](https://img.shields.io/badge/License-XingYuan--Custom-orange.svg)
+
 
 ## 📄 开源协议 (License)
 
