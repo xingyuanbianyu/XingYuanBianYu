@@ -18,3 +18,9 @@ chmod +x XYBY.sh
 
 # 编译并启动（如果没有 disk.img 会自动创建）
 ./XYBY.sh
+
+```
+## 📄 开源协议 (License)
+
+本项目采用自定义开源协议，**强制保留原作者署名（XingYuan），禁止未经许可的商业使用**。
+详细条款请参阅根目录下的 [LICENSE](./LICENSE) 文件。
