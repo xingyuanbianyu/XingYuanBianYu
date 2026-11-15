@@ -203,10 +203,13 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
         return nano_cmd(state, vfs_path);
     }
 
+    // ============================================================
     // 🚀 del 模式
+    // ============================================================
     if (raw_mode == "del") {
         std::vector<std::string> del_args = { vfs_path };
-        return del_cmd(state, del_args);
+        // 🚀 关键修复：传入 true，允许 open 配合 del 跨环境删除绝对路径！
+        return del_cmd(state, del_args, true); 
     }
 
     // 4. 核心 VFS 文件操作
@@ -254,11 +257,9 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
         
         if (items.empty()) return "";
         
-        // 🚀 核心修复：使用 vector 收集所有真正有效的非空条目
         std::vector<std::string> valid_items;
         for (const auto& item : items) {
             if (item.empty()) continue;
-            // 防止纯粹的 ANSI 转义码或纯换行符混入
             if (item == "\n" || item == "\r" || item == "\r\n") continue;
             valid_items.push_back(item);
         }
@@ -268,7 +269,6 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
         std::string result;
         for (size_t i = 0; i < valid_items.size(); ++i) {
             result += valid_items[i];
-            // 🚀 修复2：只在两个有效项之间加换行，最后一项后面绝对不加
             if (i + 1 < valid_items.size()) result += "\n";
         }
         
@@ -296,7 +296,7 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
     }
 
     // ============================================================
-    // 🚀 info 模式
+    // 🚀 info 模式 (彻底解决 95 字节假象 & 净化权限判断)
     // ============================================================
     else if (mode == "info") {
         if (!VFS::getInstance().check_resource_access(vfs_path)) {
@@ -325,27 +325,21 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
             std::vector<std::string> items = VFS::getInstance().list_directory(vfs_path);
             out += "包含: " + std::to_string(items.size()) + " 项\n";
         } else {
-            std::string content = VFS::getInstance().read_file(vfs_path);
-            out += "大小: " + std::to_string(content.size()) + " 字节\n";
+            // 🚀 直接用 Node 基类的 size 属性，无视二进制截断
+            out += "大小: " + std::to_string(vfs_node->size) + " 字节\n";
         }
 
+        // 🚀 直接调用 VFS 接口获取动态资源信息，废弃一切的硬编码猜测！
         ResourceInfo ri = VFS::getInstance().get_resource_info_dynamic(vfs_path);
 
-        std::string tag = DiskFileSystem::get_resource_tag(
-                              VFS::getInstance().get_disk_driver(), vfs_path);
-
-        std::string owner_str;
-        if (tag == "R0") {
-            owner_str = "R0";
-        } else if (tag == "PATH") {
-            owner_str = "-";
-        } else if (ri.owner_id == -1) {
-            owner_str = "-";
-        } else {
+        // 🚀 直接用 owner_id 转换归属，信任底层元数据
+        std::string owner_str = "-";
+        if (ri.owner_id != -1) {
             owner_str = owner_id_to_role_name(ri.owner_id);
         }
         out += "归属: " + owner_str + "\n";
 
+        // 🚀 直接用 ResourceInfo 里的 type 字段获取资源类型
         std::string rt;
         switch (ri.type) {
             case ResourceType::PUBLIC:  rt = "公共资源"; break;
@@ -353,7 +347,7 @@ std::string open_cmd(DCLState& state, const std::vector<std::string>& raw_args,
             case ResourceType::SPECIAL: rt = "特殊资源"; break;
             case ResourceType::GROUP:   rt = "组资源";   break;
             case ResourceType::SYSTEM:  rt = "系统资源"; break;
-            default:                    rt = "公共资源"; break;
+            default:                    rt = "未知资源"; break;
         }
         out += "资源类型: " + rt + "\n";
         out += "归属域: " + std::to_string(ri.domain_id) + "\n";

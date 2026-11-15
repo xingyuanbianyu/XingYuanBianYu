@@ -10,11 +10,21 @@
 // ================= 资源系统实现 =================
 
 // ============================================================
-// 🚀 get_resource_type：优先读磁盘上的隐藏标记 resource_tag
+// 🚀 get_resource_type：内存注册表绝对优先！
 // ============================================================
 ResourceType VFS::get_resource_type(const std::string& vfs_path) const {
     std::string path_str = normalize_path(vfs_path);
 
+    // 🚀 核心修复 1：直接查内存注册表，命中就立刻返回，绝不走底层！
+    {
+        std::shared_lock<std::shared_mutex> lock(vfs_mutex);
+        auto it = resource_registry.find(path_str);
+        if (it != resource_registry.end()) {
+            return it->second.type;
+        }
+    }
+
+    // 🚀 核心修复 2：如果注册表没有，再查底层磁盘标签
     BlockDevice* dev = get_disk_driver();
     if (dev) {
         std::string tag = DiskFileSystem::get_resource_tag(dev, path_str);
@@ -31,7 +41,7 @@ ResourceType VFS::get_resource_type(const std::string& vfs_path) const {
         return ResourceType::PRIVATE;
     }
 
-    // 🚀 兜底 2：用户注册表（需要加读锁，防止 map 迭代器失效）
+    // 🚀 兜底 2：用户注册表的前缀匹配（保留你原本的逻辑，但加了锁）
     {
         std::shared_lock<std::shared_mutex> lock(vfs_mutex);
         for (const auto& [reg_path, info] : resource_registry) {
@@ -41,12 +51,12 @@ ResourceType VFS::get_resource_type(const std::string& vfs_path) const {
         }
     }
 
-    // 🚀 兜底 3：系统路径 (去除了硬编码的 /C:/，兼容单盘及多盘环境)
+    // 🚀 兜底 3：系统路径
     if (path_str.find("/System") == 0 || path_str.find("/Windows") == 0) {
         return ResourceType::SYSTEM;
     }
 
-    // 🚀 兜底 4：隐藏文件（以 . 开头）
+    // 🚀 兜底 4：隐藏文件
     size_t last_slash = path_str.find_last_of('/');
     std::string filename = (last_slash == std::string::npos) ? path_str : path_str.substr(last_slash + 1);
     if (!filename.empty() && filename[0] == '.') {
@@ -54,6 +64,34 @@ ResourceType VFS::get_resource_type(const std::string& vfs_path) const {
     }
 
     return ResourceType::PUBLIC;
+}
+
+// ============================================================
+// 🚀 set_resource_info：内存 + 底层双写！
+// ============================================================
+void VFS::set_resource_info(const std::string& vfs_path, const ResourceInfo& info) {
+    std::string norm = normalize_path(vfs_path);
+    
+    // 1. 写入内存注册表
+    {
+        std::unique_lock<std::shared_mutex> lock(vfs_mutex);
+        resource_registry[norm] = info;
+    }
+
+    // 2. 🚀 核心修复 3：同步修改底层磁盘 Inode 的 resource_tag
+    BlockDevice* dev = get_disk_driver();
+    if (dev) {
+        std::string tag = RES_TAG_PATH;
+        switch (info.type) {
+            case ResourceType::SYSTEM:  tag = RES_TAG_PATH; break; 
+            case ResourceType::PUBLIC:  tag = RES_TAG_HOME; break;
+            case ResourceType::PRIVATE: tag = RES_TAG_ROOT; break;
+            case ResourceType::SPECIAL: tag = RES_TAG_CMD;  break;
+            default:                    tag = RES_TAG_PATH; break;
+        }
+        // 写入底层
+        DiskFileSystem::set_resource_tag(dev, norm, tag);
+    }
 }
 
 // ============================================================

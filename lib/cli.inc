@@ -276,6 +276,15 @@ void cli_execute_single(const std::string& cmd_line, DCLState& state, int& cli_p
         }
     }
 
+    // 🚀 核心修复：如果第一个词是 open，直接透传全参数，绝不参与前后缀拆分！
+    // 这样 open /bin/lib/mpv.xyn del 就会作为一个整体被解析
+    if (tokens[0] == "open") {
+        std::string cmd_name = "open";
+        std::vector<std::string> cmd_args(tokens.begin() + 1, tokens.end());
+        dispatch_command(cmd_name, cmd_args, state, cli_priv);
+        return;
+    }
+
     int back_idx = -1;
     int front_idx = -1;
     for (size_t i = 0; i < tokens.size(); ++i) {

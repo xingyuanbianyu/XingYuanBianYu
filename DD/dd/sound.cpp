@@ -13,8 +13,9 @@
 static ma_device g_device;
 static ma_context g_context;
 static bool g_device_inited = false; 
+static bool g_context_inited = false; // 🚀 新增：严格追踪上下文状态
 static std::atomic<bool> g_is_playing(false);
-static std::atomic<bool> g_is_paused(false); // 🚀 暂停标记
+static std::atomic<bool> g_is_paused(false);
 
 static std::vector<int16_t> g_pcm_data;
 static size_t g_pcm_offset = 0; 
@@ -25,7 +26,7 @@ static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput,
     int16_t* out = (int16_t*)pOutput;
     size_t needed_samples = frameCount * g_channels;
 
-    // 🚀 如果被标记为暂停，直接输出静音，并且彻底不读 PCM 数据
+    // 暂停时输出静音
     if (g_is_paused) {
         memset(out, 0, needed_samples * sizeof(int16_t));
         return;
@@ -66,30 +67,35 @@ void SoundCard::init() {
     m_ready = true; 
 }
 
+// 🚀 核心修复 1：play_buffer 只接收纯 PCM 数据，不再重复剥离头部
 int SoundCard::play_buffer(const void* data, size_t size) {
-    if (!data || size < 16) return -1;
+    if (!data || size == 0) return -1;
+    
+    // 安全清理上一次的播放状态
     stop_all(); 
 
-    const uint8_t* ptr = (const uint8_t*)data;
-    size_t pcm_start = 16; 
-
-    g_sample_rate = *(uint32_t*)(ptr + 4);
-    g_channels    = *(uint16_t*)(ptr + 8);
-
-    size_t pcm_bytes = size - pcm_start;
-    size_t total_samples = pcm_bytes / sizeof(int16_t);
+    // 直接作为纯 PCM 处理（dcl_player 已经帮我们剥掉了 Xyp4Header）
+    size_t total_samples = size / sizeof(int16_t);
     
-    std::vector<int16_t> temp_pcm((int16_t*)(ptr + pcm_start), (int16_t*)(ptr + pcm_start) + total_samples);
+    std::vector<int16_t> temp_pcm((int16_t*)data, (int16_t*)data + total_samples);
     g_pcm_data.swap(temp_pcm);
     g_pcm_offset = 0;
     g_is_playing = true;
     g_is_paused = false;
 
-    ma_backend backends[] = { ma_backend_opensl, ma_backend_aaudio };
-    ma_result res = ma_context_init(backends, 2, NULL, &g_context);
-    if (res != MA_SUCCESS) {
-        res = ma_context_init(NULL, 0, NULL, &g_context);
-        if (res != MA_SUCCESS) return -1;
+    // 🚀 初始化上下文（只做一次）
+    if (!g_context_inited) {
+        ma_backend backends[] = { ma_backend_opensl, ma_backend_aaudio };
+        ma_result res = ma_context_init(backends, 2, NULL, &g_context);
+        if (res != MA_SUCCESS) {
+            // 回退到默认后端
+            res = ma_context_init(NULL, 0, NULL, &g_context);
+            if (res != MA_SUCCESS) {
+                std::cerr << "[SoundCard] 上下文初始化失败" << std::endl;
+                return -1;
+            }
+        }
+        g_context_inited = true;
     }
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
@@ -98,14 +104,23 @@ int SoundCard::play_buffer(const void* data, size_t size) {
     config.sampleRate        = g_sample_rate;
     config.dataCallback      = data_callback;
     
-    res = ma_device_init(&g_context, &config, &g_device);
+    ma_result res = ma_device_init(&g_context, &config, &g_device);
     if (res != MA_SUCCESS) {
-        ma_context_uninit(&g_context);
-        return -1;
+        std::cerr << "[SoundCard] 设备初始化失败，错误码: " << res << std::endl;
+        return -1; // 🚀 失败就直接返回，不要在这里 uninit 上下文，交给 stop_all 处理
     }
     g_device_inited = true;
 
-    ma_device_start(&g_device); 
+    // 设置初始音量
+    ma_device_set_master_volume(&g_device, m_volume / 100.0f);
+    
+    res = ma_device_start(&g_device); 
+    if (res != MA_SUCCESS) {
+        std::cerr << "[SoundCard] 设备启动失败" << std::endl;
+        stop_all();
+        return -1;
+    }
+
     return 1;
 }
 
@@ -113,23 +128,26 @@ bool SoundCard::is_alive(int handle) const {
     return g_is_playing;
 }
 
+// 🚀 核心修复 2：安全的生命周期销毁
 void SoundCard::stop_all() {
     g_is_playing = false;
     g_is_paused = false;
+    
     if (g_device_inited) {
         ma_device_uninit(&g_device);
         g_device_inited = false;
     }
-    if (g_context.backend != ma_backend_null) {
+    
+    if (g_context_inited) {
         ma_context_uninit(&g_context);
-        g_context.backend = ma_backend_null;
+        g_context_inited = false;
     }
+    
     std::vector<int16_t>().swap(g_pcm_data);
 }
 
 bool SoundCard::stop(int handle) { stop_all(); return true; }
 
-// 🚀 暂停：释放底层设备但保留上下文
 bool SoundCard::pause(int handle) {
     if (!g_device_inited || !g_is_playing) return false;
     g_is_paused = true;
@@ -137,7 +155,6 @@ bool SoundCard::pause(int handle) {
     return true;
 }
 
-// 🚀 恢复：唤醒设备
 bool SoundCard::resume(int handle) {
     if (!g_device_inited || !g_is_playing) return false;
     g_is_paused = false;
@@ -151,6 +168,7 @@ void SoundCard::set_volume(int v) {
     m_volume = v; 
     if (g_device_inited) ma_device_set_master_volume(&g_device, v / 100.0f);
 }
+
 int SoundCard::get_volume() const { return m_volume; }
 bool SoundCard::beep() { return false; }
 int SoundCard::play(const std::string& path) { return -1; }

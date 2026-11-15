@@ -143,16 +143,44 @@ std::string xyp4_cmd(const std::vector<std::string>& args) {
 
     auto out_node = VFS::getInstance().get_node(out_path);
     std::string write_err;
+    bool is_new_file = false;
+
     if (out_node) {
         write_err = VFS::getInstance().write_file(out_path, out_data);
     } else {
         write_err = VFS::getInstance().create_file(out_path, out_data);
-        // 🚀 关键提醒：如果你 VFS 的 create_file 有重载接口，一定要在这里传入当前用户的权限和 owner_id！
-        // 否则生成的文件又会是只读的 "系统资源"。
+        is_new_file = true; // 🚀 标记这是新创建的文件
     }
 
     if (!write_err.empty()) {
         return "错误: 写入 VFS 失败 - " + write_err;
+    }
+
+    // 🚀 核心修复：新文件创建成功后，直接继承父目录的完整属性！
+    if (is_new_file) {
+        // 1. 提取父目录路径
+        std::string parent_dir = "/";
+        size_t pos = out_path.find_last_of('/');
+        if (pos != std::string::npos) {
+            parent_dir = out_path.substr(0, pos);
+            if (parent_dir.empty()) parent_dir = "/";
+        }
+
+        // 2. 获取父目录（比如 ~/音乐）的真实资源属性
+        ResourceInfo parent_info = VFS::getInstance().get_resource_info_dynamic(parent_dir);
+
+        // 3. 构造新文件的属性
+        ResourceInfo info;
+        info.type = parent_info.type;           // 继承父目录类型 (私有资源)
+        info.perms = parent_info.perms;         // 继承父目录权限 (读写改删清查执)
+        info.domain_id = parent_info.domain_id; // 继承归属域
+        info.group_id = parent_info.group_id;   // 继承组
+        
+        // 4. 唯一区别：归属者设为当前生成文件的用户
+        info.owner_id = VFS::getInstance().get_effective_owner(); 
+
+        // 5. 强行写入 VFS 元数据
+        VFS::getInstance().set_resource_info(out_path, info);
     }
 
     double duration_sec = (sample_rate > 0) ? (double)header.total_samples / sample_rate : 0.0;

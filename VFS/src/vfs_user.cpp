@@ -64,7 +64,6 @@ bool VFS::check_cmd_permission(const std::string& cmd_name) const {
     }
 
     // 🚀 防提权绕过：剥离绝对路径或相对路径前缀，只取纯指令名
-    // 例如：/bin/kill 或 ./kill 或 a/b/run -> 提取出 kill / run
     std::string pure_cmd = cmd_name;
     size_t slash_pos = pure_cmd.find_last_of("/\\");
     if (slash_pos != std::string::npos) {
@@ -82,7 +81,6 @@ bool VFS::check_cmd_permission(const std::string& cmd_name) const {
 
     auto it = CMD_ROLE_MAP.find(pure_cmd);
     if (it == CMD_ROLE_MAP.end()) {
-        // 未在表里的命令，默认 R6 访客即可执行
         return true;
     }
     return check_permission(it->second);
@@ -96,15 +94,9 @@ ResourceInfo VFS::get_resource_info(const std::string& vfs_path) const {
 }
 
 // ============================================================
-// 🚀 set_resource_info：直接覆盖注册表
-//    🚀 核心修复：std::map 不是线程安全的，必须加写锁！
+// 🚀 注意：set_resource_info 的新版包含底层磁盘同步，已移至 vfs_resource.cpp！
+//    请勿在此文件重新定义，否则会引发 duplicate symbol 链接错误。
 // ============================================================
-void VFS::set_resource_info(const std::string& vfs_path, const ResourceInfo& info) {
-    std::string norm = normalize_path(vfs_path);
-    
-    std::unique_lock<std::shared_mutex> lock(vfs_mutex);
-    resource_registry[norm] = info;
-}
 
 // ============================================================
 // 🚀 check_perm：细粒度权限位检查
@@ -133,8 +125,6 @@ void VFS::set_perm(const std::string& vfs_path, uint32_t perm) {
     // 为了绝对防范死锁，我们先用无锁/独立作用域读取它
     ResourceInfo ri;
     {
-        // get_resource_info_dynamic 通常自带 shared_lock，
-        // 但我们避免在持有 unique_lock 时调用它。
         ri = get_resource_info_dynamic(norm);
     }
 

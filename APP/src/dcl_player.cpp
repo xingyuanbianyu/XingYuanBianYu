@@ -1,4 +1,5 @@
 #include "../include/dcl_player.h"
+#include "../include/dcl_xyp4.h" // 🚀 必须引入 xyp4 头文件以获取 Xyp4Header
 #include "../../DD/include/sound.h"
 #include "../../DD/include/config.h"
 #include "../../VFS/include/vfs.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <sstream>
 #include <mutex>
+#include <cstring>
 
 namespace fs = std::filesystem;
 extern std::string drt_get_name_by_uid(int uid);
@@ -162,15 +164,36 @@ struct CliPlayer {
         }
     }
 
+    // 🚀 核心修复：剥离 Xyp4Header，传递纯 PCM 数据
     void play_current() {
         SoundCard::getInstance().stop_all();
         std::string target = playlist[current_index];
         
         std::string raw_data = VFS::getInstance().read_file(target);
         if (raw_data.empty()) return;
+
+        // 检查文件大小是否满足最小头部要求
+        if (raw_data.size() <= sizeof(Xyp4Header)) return;
+
+        Xyp4Header header;
+        std::memcpy(&header, raw_data.data(), sizeof(Xyp4Header));
+
+        // 检查 Magic 是否为 "XYP4"
+        if (std::memcmp(header.magic, "XYP4", 4) == 0) {
+            // 提取纯 PCM 数据
+            std::vector<uint8_t> pcm_data(raw_data.begin() + sizeof(Xyp4Header), raw_data.end());
+            
+            // 🚀 提示：如果你的 SoundCard::play_buffer 底层接口支持多参数，请换成这行：
+            // SoundCard::getInstance().play_buffer(pcm_data.data(), pcm_data.size(), header.sample_rate, header.channels, header.bit_depth);
+            
+            // 目前先用双参数调用，确保不报错。底层 SoundCard 内部需要能正确处理默认音频流。
+            SoundCard::getInstance().play_buffer(pcm_data.data(), pcm_data.size());
+        } else {
+            // 兜底逻辑：如果不是 XYP4 文件，可能是个裸 PCM 或者是其他格式，直接丢给声卡
+            std::vector<uint8_t> buffer(raw_data.begin(), raw_data.end());
+            SoundCard::getInstance().play_buffer(buffer.data(), buffer.size());
+        }
         
-        std::vector<uint8_t> buffer(raw_data.begin(), raw_data.end());
-        SoundCard::getInstance().play_buffer(buffer.data(), buffer.size());
         is_paused = false;
     }
 
