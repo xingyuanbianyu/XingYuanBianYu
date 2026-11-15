@@ -4,13 +4,13 @@
 *.obj
 *.out
 *.db
-*.xy
 *.img
 # 忽略特殊的 Socket 和临时文件
 *.sock
 *.tmp
 .xyby.sock
 .xyby_tmp
+*.xy*
 # 忽略 IDE 配置文件（如果你用手机或电脑上的IDE的话）
 .vscode/
 .idea/

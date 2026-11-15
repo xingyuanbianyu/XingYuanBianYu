@@ -1,0 +1,43 @@
+XingYuanBianYu Open Source License
+星缘编语 自定义开源协议
+
+Copyright (c) 2026 XingYuan. All rights reserved.
+(版权所有 (c) 2026 XingYuan。保留所有权利。)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, subject to the following conditions:
+
+1. Attribution (强制署名): The original author's name "XingYuan" and this 
+   copyright notice MUST be prominently displayed in all copies, modifications, 
+   or derivative works of this Software. You must not claim that you wrote 
+   the original software.
+   (任何复制、修改或衍生作品必须显著保留原作者“XingYuan”的署名及此版权声明。不得声称您编写了原始软件。)
+
+2. Open Source (开源延续): Any modified version or derivative work MUST also be 
+   open-sourced under this exact same license. You may not hide or close-source 
+   the modified code.
+   (任何修改版本或衍生作品必须同样开源，遵循本协议。不得闭源或隐藏修改后的代码。)
+
+3. Commercial Use (商业限制): Commercial use is strictly prohibited without 
+   explicit written permission from the author (XingYuan). 
+   (未经作者书面许可，严禁将本软件用于任何商业用途。)
+
+4. Name Protection (名称保护): The name "XingYuan" or "星缘编语" must not be 
+   used to endorse or promote products derived from this Software without 
+   prior written permission.
+   (未经事先书面许可，不得使用“XingYuan”或“星缘编语”的名称来背书或推广衍生作品。)
+
+5. Third-Party Dependencies (第三方依赖): This software dynamically links to 
+   OpenSSL. The OpenSSL libraries are covered by their respective licenses 
+   and copyright holders.
+   (本软件动态链接了 OpenSSL。OpenSSL 库受其各自的协议和版权所有者保护。)
+
+6. Disclaimer (免责声明): THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF 
+   ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO 
+   EVENT SHALL THE AUTHOR (XINGYUAN) BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+   SOFTWARE.
+   (本软件按“原样”提供，不提供任何明示或暗示的担保。在任何情况下，作者 (XingYuan) 均不对因本软件或本软件的使用或其他交易而引起的任何索赔、损害或其他责任负责。)
