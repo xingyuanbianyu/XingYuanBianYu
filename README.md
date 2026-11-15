@@ -21,8 +21,8 @@
    ```bash
    pkg update && pkg upgrade
    pkg install git clang make openssl
+   ```
    (注：Termux 下通常使用 clang 编译，如果你的脚本绑定了 g++，可以尝试 pkg install gcc)
-```
 3. 克隆本项目并进入目录：
    ```bash
    git clone https://gitee.com/starry-language/XingYuanBianYu.git
