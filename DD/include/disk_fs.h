@@ -498,7 +498,9 @@ static_assert(sizeof(PhysicalLogicalHeader) <= BLOCK_SIZE, "");
 class DiskFileSystem {
 public:
     static void format(BlockDevice* disk, const std::string& label, bool create_defaults = true);
-    static void rebuild_bitmap(BlockDevice* disk);
+    
+    // 🚀 核心修复：加上默认参数，完美兼容之前的旧调用
+    static void rebuild_bitmap(BlockDevice* disk, uint32_t part_start = 0, uint32_t part_end = 0);
 
     static bool find_entry(BlockDevice* disk, const std::string& vfs_path, DirEntry& out_entry);
     static bool create_file(BlockDevice* disk, const std::string& vfs_path);

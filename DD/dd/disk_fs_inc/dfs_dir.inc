@@ -1,14 +1,8 @@
 // ============================================================
 // dfs_dir.inc —— 目录操作 v7（名字分离架构 + 定长遍历 + 幽灵过滤）
-//
-// 🚀 核心改变：
-//   1. DirEntryHeader 定长为 40 字节。
-//   2. 名字实体被移入专门的 NameBlock，支持无限长，按需分配。
-//   3. 增加空名字防御：彻底拦截因名字块损坏导致的“幽灵空行”。
 // ============================================================
 
-// ---------- 共享 helper（dfs_ops.inc 也会用到） ----------
-
+// ---------- 共享 helper ----------
 struct RawDirEntry {
     DirEntryHeader hdr;
     std::string    name;
@@ -26,7 +20,10 @@ static uint32_t write_name_to_blocks(BlockDevice* disk, const std::string& name)
 
     while (!remaining.empty()) {
         uint32_t nb = DiskFileSystem::allocate_sector(disk);
-        if (nb == 0) break; // 空间不够了
+        if (nb == 0) {
+            std::cerr << "[DEBUG_WRITE_NAME] allocate_sector 失败，磁盘可能已满\n";
+            break;
+        }
 
         if (first_block == 0) first_block = nb;
 
@@ -35,7 +32,7 @@ static uint32_t write_name_to_blocks(BlockDevice* disk, const std::string& name)
         nbh->magic = NAME_BLOCK_MAGIC;
         nbh->next_block = 0;
         
-        size_t space = BLOCK_SIZE - sizeof(NameBlockHeader); // 4084 字节可用
+        size_t space = BLOCK_SIZE - sizeof(NameBlockHeader);
         size_t take = std::min(space, remaining.size());
         
         nbh->this_len = (uint16_t)take;
@@ -43,7 +40,6 @@ static uint32_t write_name_to_blocks(BlockDevice* disk, const std::string& name)
         remaining = remaining.substr(take);
 
         if (prev_block != 0) {
-            // 更新上一块的 next_block 指针
             uint8_t pbuf[BLOCK_SIZE] = {0};
             disk->read_sector(prev_block, pbuf);
             NameBlockHeader* pnbh = reinterpret_cast<NameBlockHeader*>(pbuf);
@@ -51,7 +47,10 @@ static uint32_t write_name_to_blocks(BlockDevice* disk, const std::string& name)
             disk->write_sector(prev_block, pbuf);
         }
 
-        if (!disk->write_sector(nb, buf)) break;
+        if (!disk->write_sector(nb, buf)) {
+            std::cerr << "[DEBUG_WRITE_NAME] 写入名字块失败，sector=" << nb << "\n";
+            break;
+        }
         prev_block = nb;
     }
     return first_block;
@@ -195,21 +194,40 @@ static uint32_t insert_into_dir(BlockDevice* disk, uint32_t parent_inode,
     DiskScope scope(disk);
 
     InodeEntry pie;
-    if (!DiskFileSystem::inode_read(disk, parent_inode, pie)) return 0;
-    if (pie.type != 1) return 0;
+    if (!DiskFileSystem::inode_read(disk, parent_inode, pie)) {
+        std::cerr << "[DEBUG_INSERT] 读取父 inode 失败\n";
+        return 0;
+    }
+    if (pie.type != 1) {
+        std::cerr << "[DEBUG_INSERT] 父 inode 不是目录\n";
+        return 0;
+    }
     uint32_t parent_domain = pie.domain_id;
 
     // 🚀 1. 先把名字写入名字块
     uint32_t name_blk = write_name_to_blocks(disk, name);
-    if (name_blk == 0) return 0;
+    if (name_blk == 0) {
+        std::cerr << "[DEBUG_INSERT] 写入名字块失败\n";
+        return 0;
+    }
 
     uint32_t scan = pie.start_block;
+    if (scan == 0) {
+        std::cerr << "[DEBUG_INSERT] 🚨 父目录的 start_block 为 0！根目录数据块丢失！\n";
+        free_name_blocks(disk, name_blk);
+        return 0;
+    }
+
     std::set<uint32_t> visited;
 
     while (scan != 0 && is_block_valid(disk, scan) && !visited.count(scan)) {
         visited.insert(scan);
         uint8_t buf[BLOCK_SIZE] = {0};
-        if (!disk->read_sector(scan, buf)) return 0;
+        if (!disk->read_sector(scan, buf)) {
+            std::cerr << "[DEBUG_INSERT] 读取父目录块失败 sector=" << scan << "\n";
+            free_name_blocks(disk, name_blk);
+            return 0;
+        }
 
         uint32_t next_block = 0;
         size_t   free_slot  = BLOCK_SIZE; // 默认没有空位
@@ -235,6 +253,7 @@ static uint32_t insert_into_dir(BlockDevice* disk, uint32_t parent_inode,
         }
 
         if (conflict) {
+            std::cerr << "[DEBUG_INSERT] 目录项冲突，名字已存在\n";
             free_name_blocks(disk, name_blk);
             return 0;
         }
@@ -256,11 +275,13 @@ static uint32_t insert_into_dir(BlockDevice* disk, uint32_t parent_inode,
             std::strncpy(hdr->resource_tag, tag.c_str(), 7);
 
             if (!disk->write_sector(scan, buf)) {
+                std::cerr << "[DEBUG_INSERT] 写回父目录块失败 sector=" << scan << "\n";
                 free_name_blocks(disk, name_blk);
                 return 0;
             }
 
             if (!DiskFileSystem::link_alloc(disk, parent_inode, child_inode, parent_domain, name)) {
+                std::cerr << "[DEBUG_INSERT] link_alloc 失败\n";
                 std::memset(hdr, 0, sizeof(*hdr));
                 disk->write_sector(scan, buf);
                 free_name_blocks(disk, name_blk);
@@ -275,9 +296,12 @@ static uint32_t insert_into_dir(BlockDevice* disk, uint32_t parent_inode,
             continue;
         }
 
-        // 如果末尾块真的一点缝都没了，分配新块
+        // ============================================================
+        // 🚀 如果末尾块真的一点缝都没了，分配新块
+        // ============================================================
         uint32_t nb = DiskFileSystem::allocate_sector(disk);
         if (nb == 0) {
+            std::cerr << "[DEBUG_INSERT] 分配新块失败，磁盘满\n";
             free_name_blocks(disk, name_blk);
             return 0;
         }
@@ -364,7 +388,7 @@ bool DiskFileSystem::find_entry(BlockDevice* disk, const std::string& vfs_path,
 }
 
 // ============================================================
-// create_directory
+// create_directory (植入全量探针)
 // ============================================================
 bool DiskFileSystem::create_directory(BlockDevice* disk, const std::string& vfs_path) {
     if (!disk) return false;
@@ -372,17 +396,22 @@ bool DiskFileSystem::create_directory(BlockDevice* disk, const std::string& vfs_
 
     std::string name = get_filename(vfs_path);
     if (name.empty() || name.size() > LINK_NAME_CAP || name == "/") {
-        std::cerr << "[MKDIR] 名字为空或超长\n";
         return false;
     }
 
     std::string parent_path = get_parent_path(vfs_path);
     uint32_t parent_inode = path_to_inode(disk, parent_path);
-    if (parent_inode == 0) return false;
-    if (find_inode_in_dir(disk, parent_inode, name) != 0) return false;
+    if (parent_inode == 0) {
+        return false;
+    }
+    if (find_inode_in_dir(disk, parent_inode, name) != 0) {
+        return false;
+    }
 
     InodeEntry pie;
-    if (!DiskFileSystem::inode_read(disk, parent_inode, pie)) return false;
+    if (!DiskFileSystem::inode_read(disk, parent_inode, pie)) {
+        return false;
+    }
 
     std::string new_tag    = "CMD";
     uint32_t    parent_domain = pie.domain_id;
@@ -436,13 +465,15 @@ bool DiskFileSystem::create_directory(BlockDevice* disk, const std::string& vfs_
     uint8_t empty[BLOCK_SIZE] = {0};
     disk->write_sector(db, empty);
 
-    if (insert_into_dir(disk, parent_inode, name, ci, 1, new_tag, db) == 0) {
+    uint32_t insert_res = insert_into_dir(disk, parent_inode, name, ci, 1, new_tag, db);
+    if (insert_res == 0) {
         DiskFileSystem::free_sector(disk, db);
         DiskFileSystem::inode_free(disk, ci);
         if (new_domain_id != DOMAIN_SLOT_FREE && new_domain_id != 0)
             DiskFileSystem::domain_free(disk, new_domain_id);
         return false;
     }
+
     return true;
 }
 

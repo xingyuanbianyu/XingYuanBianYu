@@ -1,12 +1,8 @@
 // ============================================================
 // dfs_file.inc —— 文件创建、写入、读取（名字分离架构适配版）
-// 
-// 核心原则：
-//   1. write_file 采用 **写时复制 (COW)**：先分配新块 → 写数据 → 更新 inode → 更新目录项 → 释放旧块。
-//   2. 目录项更新已适配定长索引 (DirEntryHeader) + 名字块 (NameBlock) 架构。
 // ============================================================
 
-// 内部的"释放 inode 数据链"（复用 dfs_inode.inc 思路，避免依赖）
+// 内部的"释放 inode 数据链"
 static void file_free_old_data_chain(BlockDevice* disk, const InodeEntry& ie) {
     if (!disk) return;
     uint32_t total = total_blocks_of(disk);
@@ -18,8 +14,10 @@ static void file_free_old_data_chain(BlockDevice* disk, const InodeEntry& ie) {
         visited.insert(b);
         uint8_t buf[BLOCK_SIZE] = {0};
         uint32_t next = 0;
-        if (disk->read_sector(b, buf))
+        if (disk->read_sector(b, buf)) {
+            // 我们的链式指针存放在 FILE_DATA_CHUNK 偏移处
             std::memcpy(&next, buf + FILE_DATA_CHUNK, 4);
+        }
         DiskFileSystem::free_sector(disk, b);
         b = next;
     }
@@ -60,7 +58,7 @@ bool DiskFileSystem::create_file(BlockDevice* disk, const std::string& vfs_path)
     std::string parent_path = get_parent_path(vfs_path);
     uint32_t parent_inode = path_to_inode(disk, parent_path);
     
-    // 🚀 核心防御：父目录不存在，直接拒绝，绝不放回干目录
+    // 🚀 核心防御：父目录不存在，直接拒绝
     if (parent_inode == 0) {
         std::cerr << "[DFS ERROR] 父目录不存在，拒绝创建: " << vfs_path << "\n";
         return false;
@@ -75,13 +73,14 @@ bool DiskFileSystem::create_file(BlockDevice* disk, const std::string& vfs_path)
     std::string new_tag       = "CMD";
     uint32_t    new_domain_id = DOMAIN_SLOT_FREE; 
 
+    // 🚀 修复 1：文件权限标签必须继承父目录，而不是死板地设为 CMD
     if (pie.resource_tag[0] != '\0') {
         new_tag = std::string(pie.resource_tag, strnlen(pie.resource_tag, 8));
     } else {
         new_domain_id = domain_alloc(disk, parent_domain, name);
         if (new_domain_id != DOMAIN_SLOT_FREE && new_domain_id != 0) {
             parent_domain = new_domain_id;
-            new_tag = "D" + std::to_string(new_domain_id);   // 控制长度
+            new_tag = "D" + std::to_string(new_domain_id); 
         }
     }
 
@@ -121,7 +120,14 @@ bool DiskFileSystem::create_file(BlockDevice* disk, const std::string& vfs_path)
         return false;
     }
 
+    // 初始化数据块（写入 BlockHeader，防止底层位图校验失败）
     uint8_t empty[BLOCK_SIZE] = {0};
+    BlockHeader* bh = reinterpret_cast<BlockHeader*>(empty);
+    bh->magic = BLOCK_MAGIC;
+    bh->inode_id = ci;
+    bh->block_index = 0;
+    bh->next_block = 0;
+    bh->data_size = 0;
     disk->write_sector(db, empty);
 
     if (insert_into_dir(disk, parent_inode, name, ci, 0, new_tag, db) == 0) {
@@ -149,6 +155,7 @@ bool DiskFileSystem::write_file(BlockDevice* disk, const std::string& vfs_path,
     if (!inode_read(disk, inode_id, ie_old)) return false;
     if (ie_old.type != 0) return false;
 
+    // 开始事务
     if (!journal_begin(disk, vfs_path, "", 0)) return false;
 
     // ---- 步骤 1：分配新块 + 写数据 ----
@@ -170,13 +177,27 @@ bool DiskFileSystem::write_file(BlockDevice* disk, const std::string& vfs_path,
 
     for (size_t i = 0; i < chunks; ++i) {
         uint8_t buf[BLOCK_SIZE] = {0};
+        
+        // 🚀 修复 2：必须初始化 BlockHeader，否则底层校验会失败
+        BlockHeader* bh = reinterpret_cast<BlockHeader*>(buf);
+        bh->magic = BLOCK_MAGIC;
+        bh->inode_id = inode_id;
+        bh->block_index = (uint32_t)i;
+        bh->next_block = (i + 1 < chunks) ? new_blocks[i + 1] : 0;
+        
         size_t offset = i * FILE_DATA_CHUNK;
         if (offset < total) {
             size_t len = std::min((size_t)FILE_DATA_CHUNK, total - offset);
-            memcpy(buf, content.data() + offset, len);
+            bh->data_size = (uint32_t)len;
+            memcpy(buf, content.data() + offset, len); // 直接从 buf 开始拷，因为 BlockHeader 是叠加的
+        } else {
+            bh->data_size = 0;
         }
-        uint32_t next = (i + 1 < chunks) ? new_blocks[i + 1] : 0;
+
+        // 兼容原有的链式指针逻辑
+        uint32_t next = bh->next_block;
         memcpy(buf + FILE_DATA_CHUNK, &next, 4);
+        
         if (!disk->write_sector(new_blocks[i], buf)) {
             for (auto x : new_blocks) free_sector(disk, x);
             journal_abort(disk);
@@ -249,6 +270,8 @@ bool DiskFileSystem::write_file(BlockDevice* disk, const std::string& vfs_path,
             if (cur == name) {
                 hdr->size         = total;
                 hdr->start_sector = ie_new.start_block;
+                // 🚀 修复 3：目录项漏掉的父块指针，必须重新赋值！
+                hdr->parent_sector = scan; 
                 if (disk->write_sector(scan, buf)) updated = true;
                 break;
             }
@@ -259,11 +282,10 @@ bool DiskFileSystem::write_file(BlockDevice* disk, const std::string& vfs_path,
             scan = next_block;
             continue;
         }
-        break; // 既没找到，也没有下一块了
+        break; 
     }
 
     if (!updated) {
-        // 🚀 回滚 inode 到旧值
         inode_write(disk, inode_id, ie_old);
         for (auto x : new_blocks) free_sector(disk, x);
         journal_abort(disk);
@@ -313,6 +335,7 @@ std::string DiskFileSystem::read_file_content(BlockDevice* disk, const std::stri
         if (!disk->read_sector(b, buf)) break;
 
         size_t chunk = std::min((size_t)FILE_DATA_CHUNK, (size_t)remaining);
+        // 直接从 buf 开始读，因为 BlockHeader 在底层存储时是覆盖在缓冲区的
         result.append(reinterpret_cast<const char*>(buf), chunk);
         remaining -= chunk;
 

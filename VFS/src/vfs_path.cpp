@@ -196,17 +196,18 @@ bool VFS::path_starts_with(const std::string& path, const std::string& prefix) {
 }
 
 // ============================================================
-// 🚀 挂载与卸载（加入线程安全）
+// 🚀 挂载（终极修复死锁版）
 // ============================================================
 bool VFS::mount_disk(const std::string& mount_point,
                      std::shared_ptr<DiskImageDriver> driver,
                      std::function<std::shared_ptr<Node>(const std::string&)> resolver) {
-    std::string norm = normalize_path(mount_point);
-    std::unique_lock<std::shared_mutex> lock(vfs_mutex); // 🚀 修改表必须加写锁
+    // 🚀 1. 在锁的外面做路径解析和检查
+    std::string norm = normalize_path(mount_point); 
 
-    // 挂载点父目录必须存在
     std::string parent = norm.substr(0, norm.find_last_of('/'));
     if (parent.empty()) parent = "/";
+    
+    // 在锁外调用 get_node 检查父目录（此时没有任何锁冲突）
     if (parent != "/" && !get_node(parent)) {
         return false;
     }
@@ -214,19 +215,29 @@ bool VFS::mount_disk(const std::string& mount_point,
     MountEntry entry;
     entry.driver   = driver;
     entry.resolver = resolver;
-    mount_table[norm] = entry;
+
+    // 🚀 2. 只把真正修改 mount_table 的动作放进锁里
+    {
+        std::unique_lock<std::shared_mutex> lock(vfs_mutex);
+        mount_table[norm] = entry;
+    }
+
     return true;
 }
 
+// ============================================================
+// 🚀 卸载（终极修复死锁版）
+// ============================================================
 bool VFS::unmount_disk(const std::string& mount_point) {
     std::string norm = normalize_path(mount_point);
-    std::unique_lock<std::shared_mutex> lock(vfs_mutex); // 🚀 修改表必须加写锁
+
+    std::unique_lock<std::shared_mutex> lock(vfs_mutex); 
 
     auto it = mount_table.find(norm);
     if (it == mount_table.end()) return false;
     mount_table.erase(it);
 
-    // 🚀 核心修复：如果当前 CWD 就在被卸载的盘里，必须强制踢回根目录！
+    // 🚀 这里只修改 current_cwd，path_starts_with 没有锁，是安全的
     if (path_starts_with(current_cwd, norm)) {
         current_cwd = "/";
     }

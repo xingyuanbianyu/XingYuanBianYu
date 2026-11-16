@@ -25,7 +25,7 @@
 2. 打开 Termux，更新软件源并安装基础依赖：
    ```bash
    pkg update && pkg upgrade
-   pkg install git clang make openssl
+   pkg install git build-essential openssl
    ```
    (注：Termux 下通常使用 clang 编译，如果你的脚本绑定了 g++，可以尝试 pkg install gcc)
 3. 克隆本项目并进入目录：
@@ -47,7 +47,7 @@
 1. 安装依赖：
    ```bash
    sudo apt-get update
-   sudo apt-get install g++ libssl-dev make
+   sudo apt-get install g++ libssl-dev build-essential
    ```
 2. 克隆项目并运行：
    ```bash

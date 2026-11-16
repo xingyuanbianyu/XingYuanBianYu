@@ -2,7 +2,7 @@
 // cli.inc —— CLI 主循环与命令分发
 // =================================================================
 #include "../APP/include/dcl_net.h"
-#include "../include/dcl_exec.h"
+#include "../DCL/include/dcl_exec.h"
 #include "../APP/include/dcl_import.h" // 🚀 引入 import 指令头文件
 #include "../APP/include/dcl_xyp4.h"   // 🚀 引入 xyp4 转换指令头文件
 #include <sys/wait.h>
@@ -276,10 +276,10 @@ void cli_execute_single(const std::string& cmd_line, DCLState& state, int& cli_p
         }
     }
 
-    // 🚀 核心修复：如果第一个词是 open，直接透传全参数，绝不参与前后缀拆分！
-    // 这样 open /bin/lib/mpv.xyn del 就会作为一个整体被解析
-    if (tokens[0] == "open") {
-        std::string cmd_name = "open";
+    // 🚀 核心修复：如果第一个词是 open 或 drt，直接透传全参数，绝不参与前后缀拆分！
+    // 这样 open /bin/lib/mpv.xyn del 或 drt disk C del 都会作为一个整体被解析
+    if (tokens[0] == "open" || tokens[0] == "drt") {
+        std::string cmd_name = tokens[0];
         std::vector<std::string> cmd_args(tokens.begin() + 1, tokens.end());
         dispatch_command(cmd_name, cmd_args, state, cli_priv);
         return;
@@ -298,7 +298,7 @@ void cli_execute_single(const std::string& cmd_line, DCLState& state, int& cli_p
         std::vector<std::string> cmd_args;
         for (int i = 0; i < front_idx; ++i) {
             // 🚀 核心修复：剔除引导词，防止 open /text/*.xy del 把 open 当成路径传给 del
-            if (tokens[i] == "open" || tokens[i] == "sft" || tokens[i] == "input") {
+            if (tokens[i] == "open" || tokens[i] == "sft" || tokens[i] == "input" || tokens[i] == "drt") {
                 continue; 
             }
             cmd_args.push_back(tokens[i]);

@@ -102,18 +102,12 @@ void DiskFileSystem::format(BlockDevice* disk, const std::string& label, bool cr
     write_super(disk, sb);
 
     // ============================================================
-    // 🚀 分区表（第 1 块）
+    // 🚀 分区表（第 1 块）—— 纯裸盘状态，不写任何默认分区！
     // ============================================================
     PhysicalLogicalMap pl_map;
     memset(&pl_map, 0, sizeof(pl_map));
     pl_map.magic = PART_MAGIC;
-    pl_map.part_count = 1;
-    std::string part_name = label.empty() ? "A" : label;
-    strncpy(pl_map.parts[0].part_name, part_name.c_str(), 31);
-    pl_map.parts[0].start_block = data_start;
-    pl_map.parts[0].end_block   = g_total - RESERVED_BLOCKS - 1;
-    pl_map.parts[0].root_inode  = 2;
-    pl_map.parts[0].type        = 1;
+    pl_map.part_count = 0; // 🚀 0 表示这是一个全新的、未切分的裸盘
 
     uint8_t part_buffer[BLOCK_SIZE] = {0};
     memcpy(part_buffer, &pl_map, sizeof(pl_map));
@@ -251,16 +245,13 @@ void DiskFileSystem::format(BlockDevice* disk, const std::string& label, bool cr
             uint8_t empty_dir[BLOCK_SIZE] = {0};
             disk->write_sector(db, empty_dir);
 
-            // 🚀 适配定长 40 字节索引
             std::string dir_name = init_dirs[i].name;
             size_t name_len = dir_name.size();
             
             if (dir_offset + sizeof(DirEntryHeader) > BLOCK_SIZE) break;
 
-            // 1. 写入名字到独立的名字块
             uint32_t name_blk = write_name_to_blocks(disk, dir_name);
 
-            // 2. 写入定长索引到根目录块
             DirEntryHeader* hdr = reinterpret_cast<DirEntryHeader*>(root_buf + dir_offset);
             memset(hdr, 0, sizeof(*hdr));
             hdr->inode_id      = ci;
@@ -269,7 +260,7 @@ void DiskFileSystem::format(BlockDevice* disk, const std::string& label, bool cr
             hdr->parent_sector = root_dir_start;
             hdr->size          = 0;
             hdr->name_len      = (uint16_t)name_len;
-            hdr->name_block    = name_blk; // 记录名字块
+            hdr->name_block    = name_blk; 
             strncpy(hdr->resource_tag, init_dirs[i].tag, 7);
             
             dir_offset += sizeof(DirEntryHeader);
@@ -352,9 +343,9 @@ void DiskFileSystem::format(BlockDevice* disk, const std::string& label, bool cr
 }
 
 // ============================================================
-// 🚀 位图重建（适配名字分离）
+// 🚀 位图重建（按分区表动态扫描）
 // ============================================================
-void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
+void DiskFileSystem::rebuild_bitmap(BlockDevice* disk, uint32_t part_start, uint32_t part_end) {
     if (!disk) return;
     DiskScope scope(disk);
 
@@ -380,6 +371,24 @@ void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
     }
 
     data_start_invalidate(disk);
+
+    // 🚀 核心逻辑：如果没有传入指定范围，就查分区表
+    if (part_start == 0 && part_end == 0) {
+        PhysicalLogicalMap pmap;
+        if (read_partition_table(disk, pmap) && pmap.part_count > 0) {
+            // 🚀 如果有分区表，扫描整个分区表覆盖的范围（从第一个分区的头，到最后一个分区的尾）
+            part_start = pmap.parts[0].start_block;
+            part_end = pmap.parts[pmap.part_count - 1].end_block;
+        } else {
+            // 🚀 如果没有分区表，或者传了 0，就默认全盘扫描
+            part_start = sb.data_start;
+            part_end = g_total - RESERVED_BLOCKS - 1;
+        }
+    }
+
+    // 安全性校验
+    if (part_start < sb.data_start) part_start = sb.data_start;
+    if (part_end >= g_total - RESERVED_BLOCKS) part_end = g_total - RESERVED_BLOCKS - 1;
 
     block_bitmap_of(disk).assign((g_total / 8) + 1, 0);
     inode_bitmap_of(disk).assign((sb.inode_count / 8) + 1, 0);
@@ -416,6 +425,12 @@ void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
         uint32_t b = ie.start_block;
         while (b != 0 && b < g_total && !visited.count(b)) {
             visited.insert(b);
+            
+            // 🚀 核心拦截：如果数据块越过了当前分区的界限，直接切断！
+            if (b < part_start || b > part_end) {
+                break;
+            }
+            
             block_bitmap_set(b, true);
             uint8_t data_buf[BLOCK_SIZE] = {0};
             if (!disk->read_sector(b, data_buf)) break;
@@ -425,7 +440,6 @@ void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
                 memcpy(&next, data_buf + FILE_DATA_CHUNK, 4);
                 b = next;
             } else {
-                // 🚀 适配定长目录遍历 + 回收名字块
                 uint32_t next = 0;
                 for (size_t off = 0; off + sizeof(DirEntryHeader) <= BLOCK_SIZE; off += sizeof(DirEntryHeader)) {
                     DirEntryHeader* hdr = reinterpret_cast<DirEntryHeader*>(data_buf + off);
@@ -436,12 +450,15 @@ void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
                     }
                     if (hdr->inode_id == 0) continue;
 
-                    // 标记名字块占用
                     if (hdr->name_block != 0) {
                         uint32_t nb = hdr->name_block;
                         std::set<uint32_t> visited_name;
                         while (nb != 0 && nb < g_total && !visited_name.count(nb)) {
                             visited_name.insert(nb);
+                            
+                            // 🚀 核心拦截：名字块越界也直接切断！
+                            if (nb < part_start || nb > part_end) break;
+
                             block_bitmap_set(nb, true);
                             uint8_t nbuf[BLOCK_SIZE] = {0};
                             if (disk->read_sector(nb, nbuf)) {
@@ -462,15 +479,18 @@ void DiskFileSystem::rebuild_bitmap(BlockDevice* disk) {
         }
 
         if (ie.type == 0 && ie.indirect_block != 0 && ie.indirect_block < g_total) {
-            block_bitmap_set(ie.indirect_block, true);
-            uint8_t ibuf[BLOCK_SIZE] = {0};
-            if (disk->read_sector(ie.indirect_block, ibuf)) {
-                const IndexBlock* ib = reinterpret_cast<const IndexBlock*>(ibuf);
-                if (ib->magic == INDEX_MAGIC && ib->count <= INDEX_PTR_MAX) {
-                    for (uint32_t k = 0; k < ib->count; ++k) {
-                        uint32_t p = ib->pointers[k];
-                        if (p != 0 && p < g_total) {
-                            block_bitmap_set(p, true);
+            // 🚀 同样对间接索引块做范围校验
+            if (ie.indirect_block >= part_start && ie.indirect_block <= part_end) {
+                block_bitmap_set(ie.indirect_block, true);
+                uint8_t ibuf[BLOCK_SIZE] = {0};
+                if (disk->read_sector(ie.indirect_block, ibuf)) {
+                    const IndexBlock* ib = reinterpret_cast<const IndexBlock*>(ibuf);
+                    if (ib->magic == INDEX_MAGIC && ib->count <= INDEX_PTR_MAX) {
+                        for (uint32_t k = 0; k < ib->count; ++k) {
+                            uint32_t p = ib->pointers[k];
+                            if (p >= part_start && p <= part_end && p < g_total) {
+                                block_bitmap_set(p, true);
+                            }
                         }
                     }
                 }
@@ -502,19 +522,24 @@ bool DiskFileSystem::read_partition_table(BlockDevice* disk, PhysicalLogicalMap&
     return true;
 }
 
+// 🚀 核心修复：缩小锁的范围
 bool DiskFileSystem::write_partition_table(BlockDevice* disk, const PhysicalLogicalMap& in_map) {
     if (!disk) return false;
     if (in_map.magic != PART_MAGIC) return false;
     if (in_map.part_count > MAX_PARTITIONS) return false;
 
     DiskScope ds(disk);
-    std::unique_lock<std::shared_mutex> lock(g_fs_rwlock);
-
-    uint8_t buf[BLOCK_SIZE] = {0};
-    std::memcpy(buf, &in_map, sizeof(PhysicalLogicalMap));
     
-    if (!disk->write_sector(PARTITION_TABLE_BLOCK, buf)) return false;
+    // 独立作用域，只锁住写分区表的操作
+    {
+        std::unique_lock<std::shared_mutex> lock(g_fs_rwlock);
+        uint8_t buf[BLOCK_SIZE] = {0};
+        std::memcpy(buf, &in_map, sizeof(PhysicalLogicalMap));
+        
+        if (!disk->write_sector(PARTITION_TABLE_BLOCK, buf)) return false;
+    } // 🚀 锁在这里释放！
 
+    // 🚀 锁释放后，再去同步 PLH，彻底杜绝死锁
     plh_sync_from_partition(disk);
     return true;
 }

@@ -58,7 +58,7 @@ static bool plh_write_unlocked(BlockDevice* disk, uint32_t part_index,
     return disk->write_sector(blk, buf);
 }
 
-// 构造分区 i 的默认 PLH（依赖主 SB 推断 part 0 的 inode 表信息）
+// 构造分区 i 的默认 PLH
 static PhysicalLogicalHeader plh_build_default(const PhysicalLogicalMap& pmap,
                                                 const Superblock& sb,
                                                 uint32_t i) {
@@ -68,20 +68,17 @@ static PhysicalLogicalHeader plh_build_default(const PhysicalLogicalMap& pmap,
     h.start_block = pmap.parts[i].start_block;
     h.end_block   = pmap.parts[i].end_block;
 
-    if (i == 0) {
-        // 🚀 修复：主分区 inode 表 = 超级块里的真实值，不是 start_block
-        h.inode_table_start  = sb.inode_table_start;
-        h.inode_table_blocks = sb.inode_table_blocks;
-        h.flags              = 0x1;
-        std::strncpy(h.tag, "A", sizeof(h.tag) - 1);
-    } else {
-        // 其他分区：当前架构下无独立 SB，inode 表位置未知 → 留 0
-        // （待扩展为"每分区独立 SB"后再从此分区头部读取）
-        h.inode_table_start  = 0;
-        h.inode_table_blocks = 0;
-        h.flags              = 0x0;
-        std::strncpy(h.tag, "OTHER", sizeof(h.tag) - 1);
-    }
+    // 🚀 核心修复：所有分区共享主盘的 inode 表！
+    // 因为我们不格式化子分区，所以子分区必须借用主盘的 inode 字典。
+    h.inode_table_start  = sb.inode_table_start;
+    h.inode_table_blocks = sb.inode_table_blocks;
+    
+    // 统一标记为已挂载可用状态
+    h.flags              = 0x1;
+    
+    // 🚀 用分区表里的标签作为 tag，方便挂载时识别
+    std::strncpy(h.tag, pmap.parts[i].part_name, sizeof(h.tag) - 1);
+    
     return h;
 }
 
@@ -103,7 +100,7 @@ bool DiskFileSystem::plh_write(BlockDevice* disk, uint32_t part_index,
     return plh_write_unlocked(disk, part_index, in);
 }
 
-// 🚀 修复：检查**所有已声明分区**都有有效 PLH，而不是只查分区 0
+// 🚀 检查所有已声明分区都有有效 PLH
 bool DiskFileSystem::plh_exists(BlockDevice* disk) {
     if (!disk) return false;
     DiskScope ds(disk);
@@ -141,10 +138,9 @@ bool DiskFileSystem::plh_generate(BlockDevice* disk) {
     PhysicalLogicalMap pmap{};
     if (!plh_read_partition_map_unlocked(disk, pmap)) return false;
 
-    // 🚀 "至少分一次盘"：需至少一个非默认分区
-    if (pmap.part_count < 2) {
-        std::cerr << "[PLH] 未分盘（part_count=" << pmap.part_count
-                  << "），不生成物理逻辑头\n";
+    // 🚀 放宽校验：只要有分区（哪怕只有 1 个）就能生成 PLH
+    if (pmap.part_count == 0) {
+        std::cerr << "[PLH] 未发现任何分区，不生成物理逻辑头\n";
         return false;
     }
 
@@ -185,11 +181,12 @@ bool DiskFileSystem::plh_sync_from_partition(BlockDevice* disk) {
         h.start_block = pmap.parts[i].start_block;
         h.end_block   = pmap.parts[i].end_block;
 
-        // 🚀 分区 0 的 inode 表随主 SB 刷新，避免 SB 位置变更后 PLH 陈旧
-        if (i == 0) {
-            h.inode_table_start  = sb.inode_table_start;
-            h.inode_table_blocks = sb.inode_table_blocks;
-        }
+        // 🚀 所有的 inode 表都必须跟随主 SB 刷新，保证所有子分区共享字典
+        h.inode_table_start  = sb.inode_table_start;
+        h.inode_table_blocks = sb.inode_table_blocks;
+        
+        // 更新标签
+        std::strncpy(h.tag, pmap.parts[i].part_name, sizeof(h.tag) - 1);
 
         if (!plh_write_unlocked(disk, i, h)) return false;
     }
