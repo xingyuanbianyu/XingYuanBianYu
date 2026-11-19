@@ -166,7 +166,7 @@ static bool is_backend_running() {
 
 static bool ensure_backend_running(const char* self_path) {
     if (is_backend_running()) return true;
-    std::cout << "[系统] 未检测到 backend，正在启动...\n";
+   // std::cout << "[系统] 未检测到 backend，正在启动...\n";
 
     char abs_path[PATH_MAX] = {0};
     ssize_t len = readlink("/proc/self/exe", abs_path, sizeof(abs_path) - 1);
@@ -192,8 +192,8 @@ static bool ensure_backend_running(const char* self_path) {
 }
 
 int main(int argc, char* argv[]) {
-    if (false) { decode_and_run_memory(""); }
-
+        if (false) { decode_and_run_memory(""); }
+        
     std::string disk_path = "disk.img";
     bool disk_exists = std::filesystem::exists(disk_path);
     bool skip_first_arg = false;
@@ -236,6 +236,10 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (i == 1 && skip_first_arg) continue;
         std::string arg = argv[i];
+        if (arg == "--version" || arg == "-V" || arg == "-v" || arg == "--V" || arg == "--v") {
+            std::cout << "XingYuanBianYu V1.0" << std::endl;
+            return 0;
+        }
         if (arg == "-C" || arg == "--cli" || arg == "cli") force_cli = true;
         else if (arg == "-G" || arg == "--gui") force_gui = true;
         else if (arg == "-c") compile_mode = true; 

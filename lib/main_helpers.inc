@@ -13,29 +13,39 @@
 #include <set>
 #include <functional>
 #include <cstring>
+#include <pty.h>       
+#include <sys/ioctl.h> 
+#include <poll.h>
+#include <fcntl.h>
+#include <cstdio>
+
+std::string new_prompt = "";
+std::string cwd = "/";
+
+// 🚀 引入 nano 交互所用的全局变量（定义在 dcl_nano.cpp）
+extern std::string g_nano_edit_content;
+extern std::string g_nano_edit_result;
 
 // 🚀 全局密码变量和密码读取函数前置声明
 extern std::string g_sudo_pass;
 std::string read_password_silent(const std::string& prompt);
 std::string drt_get_r3_name();
-extern std::string drt_get_name_by_uid(int uid); // 🚀 引入账户名获取，用于解析 ~/
+extern std::string drt_get_name_by_uid(int uid); 
 
-// 🚀 前置声明：消费内核信号队列（避免头文件依赖顺序导致报错）
 void kernel_process_signals();
+std::string nano_cmd(DCLState& state, const std::string& vfs_path);
 
 // ============================================================
-// 🚀 强行补上的远程交互输入接口（解决报错的关键）
+// 🚀 远程交互输入接口
 // ============================================================
-int g_backend_client_fd = -1; // 全局记录 Socket 句柄
+int g_backend_client_fd = -1; 
 
 std::string request_frontend_input(const std::string& prompt) {
-    if (g_backend_client_fd == -1) return "None"; // 没在 Socket 环境
+    if (g_backend_client_fd == -1) return "None"; 
     
-    // 向后端发出输入请求协议
     std::string req = "__REQ_INPUT__:" + prompt + "\n";
     write(g_backend_client_fd, req.c_str(), req.size());
     
-    // 阻塞等待前端发来的输入数据
     char buf[4096];
     int n = read(g_backend_client_fd, buf, sizeof(buf) - 1);
     if (n <= 0) return "None";
@@ -131,7 +141,7 @@ static std::string strip_list_prefix(const std::string& s) {
 }
 
 // ============================================================
-// 🚀 统一路径前缀解析（用于 .xyn 引擎和 include）
+// 🚀 统一路径前缀解析
 // ============================================================
 static std::string resolve_vfs_path_prefix(const std::string& raw) {
     if (raw.empty()) return raw;
@@ -159,7 +169,7 @@ static std::string resolve_vfs_path_prefix(const std::string& raw) {
 }
 
 // ============================================================
-// #include 预处理（探针缓存版）
+// #include 预处理
 // ============================================================
 static const std::map<std::string, std::string>& load_include_config() {
     static std::map<std::string, std::string> config;
@@ -214,9 +224,6 @@ static const std::map<std::string, std::string>& load_include_config() {
     return config;
 }
 
-// ============================================================
-// 🚀 include 路径解析
-// ============================================================
 std::string resolve_system_include(const std::string& name) {
     const auto& cfg = load_include_config();
     auto it = cfg.find(name);
@@ -305,7 +312,6 @@ std::string expand_includes(const std::string& code,
                     continue;
                 }
 
-                // 🚀 先解析路径前缀（支持 ~/、./）
                 rel = resolve_vfs_path_prefix(rel);
 
                 std::string vfs_path;
@@ -379,11 +385,11 @@ std::string expand_includes(const std::string& code,
 }
 
 // ============================================================
-// 🚀 命令索引内存表（核心黑科技）
+// 🚀 命令索引内存表
 // ============================================================
 struct LibIndexCache {
-    std::map<std::string, std::string> table; // 命令名 → VFS 路径
-    std::string signature = "";               // 目录签名（用于判断是否有更新）
+    std::map<std::string, std::string> table; 
+    std::string signature = "";               
     bool loaded = false;
 };
 
@@ -435,7 +441,7 @@ inline void refresh_lib_index() {
     for (auto& [cmd, path] : g_lib_cache.table) {
         data += cmd + " " + path + "\n";
     }
-    std::string path = "/data.xyt";
+    std::string path = "/bin/data.xyi";
     if (VFS::getInstance().get_node(path)) {
         VFS::getInstance().write_file(path, data);
     } else {
@@ -473,7 +479,7 @@ inline bool resolve_lib_command(const std::string& cmd, std::string& out_path) {
 }
 
 // ============================================================
-// 用户路径解析（宿主机）
+// 用户路径解析
 // ============================================================
 static std::string resolve_user_path(const std::string& input) {
     if (input.empty()) return input;
@@ -503,7 +509,7 @@ static std::string resolve_user_path(const std::string& input) {
 static const char* BACKEND_SOCK = "./.xyby.sock";
 
 // ============================================================
-// 🚀 前置声明（定义在 cli.inc）
+// 🚀 前置声明
 // ============================================================
 void cli_execute_single(const std::string& cmd_line, DCLState& state, int& cli_priv);
 
@@ -524,13 +530,65 @@ static std::string backend_execute_line(const std::string& req, DCLState& state)
         return "__SYS_EXIT__";
     }
 
+    // 🚀 1. 拦截 nano，让前端接管
     if (request_contains_nano(req)) {
-        int cli_priv = 0;
-        cli_execute_single(req, state, cli_priv);
-        kernel_process_signals(); 
-        return "__CWD__:" + VFS::getInstance().get_cwd() + "\n";
+        std::string vfs_path = "";
+        std::stringstream ss(req);
+        std::string token;
+        while (ss >> token) {
+            if (token != "open" && token != "nano") {
+                vfs_path = token;
+                break;
+            }
+        }
+        if (!vfs_path.empty() && vfs_path[0] != '/') {
+            vfs_path = VFS::getInstance().normalize_path(vfs_path);
+        }
+        return "__REQ_NANO__:" + vfs_path;
     }
 
+    // 🚀 2. 响应前端请求文件内容
+    if (req.rfind("__GET_FILE__:", 0) == 0) {
+        std::string path = req.substr(13);
+        if (!VFS::getInstance().get_node(path)) {
+            VFS::getInstance().create_file(path, "");
+        }
+        return "__FILE_DATA__:" + VFS::getInstance().read_file(path);
+    }
+
+    // 🚀 3. 响应前端保存文件请求（绝对落盘安全版）
+    if (req.rfind("__SAVE_FILE__:", 0) == 0) {
+        size_t nl1 = req.find('\n');
+        if (nl1 != std::string::npos) {
+            std::string path = req.substr(14, nl1 - 14);
+            
+            size_t nl2 = req.find('\n', nl1 + 1);
+            if (nl2 != std::string::npos) {
+                std::string len_str = req.substr(nl1 + 1, nl2 - nl1 - 1);
+                uint64_t expect_len = std::stoull(len_str);
+                
+                std::string content = req.substr(nl2 + 1);
+                while (content.size() < expect_len) {
+                    char tbuf[8192];
+                    ssize_t n = read(g_backend_client_fd, tbuf, sizeof(tbuf));
+                    if (n <= 0) break;
+                    content.append(tbuf, n);
+                }
+                
+                if (content.size() >= expect_len) {
+                    content = content.substr(0, expect_len); 
+                    std::string res = VFS::getInstance().write_file(path, content);
+                    if (res.empty()) {
+                        return "__SAVE_OK__";
+                    }
+                    return "__SAVE_FAIL__:" + res;
+                }
+            }
+        }
+        return "__SAVE_FAIL__: 协议长度校验失败或传输中断";
+    }
+
+    // 普通命令执行
     std::streambuf* old_cout = std::cout.rdbuf();
     std::streambuf* old_cerr = std::cerr.rdbuf();
     std::stringstream captured;
@@ -575,7 +633,7 @@ inline void run_backend_server(DCLState& state) {
     }
 
     listen(fd, 8);
-    std::cout << "[backend] 已就绪，监听 " << BACKEND_SOCK << "\n";
+   // std::cout << "[backend] 已就绪，监听 " << BACKEND_SOCK << "\n";
 
     while (true) {
         int cli = accept(fd, nullptr, nullptr);
@@ -584,6 +642,7 @@ inline void run_backend_server(DCLState& state) {
         pid_t pid = fork();
         if (pid == 0) {
             close(fd);
+            g_backend_client_fd = cli; 
             DCLState local_state = state;
 
             while (true) {
@@ -600,6 +659,18 @@ inline void run_backend_server(DCLState& state) {
                                 break;
                             }
                         }
+                    } else if (req.rfind("__SAVE_FILE__:", 0) == 0) {
+                        size_t nl1 = req.find('\n');
+                        if (nl1 != std::string::npos) {
+                            size_t nl2 = req.find('\n', nl1 + 1);
+                            if (nl2 != std::string::npos) {
+                                std::string len_str = req.substr(nl1 + 1, nl2 - nl1 - 1);
+                                try {
+                                    uint64_t expect_len = std::stoull(len_str);
+                                    if (req.size() - (nl2 + 1) >= expect_len) break;
+                                } catch(...) {}
+                            }
+                        }
                     } else {
                         if (req.find('\n') != std::string::npos) {
                             break;
@@ -607,7 +678,8 @@ inline void run_backend_server(DCLState& state) {
                     }
                 }
                 if (req.empty()) break;
-                if (!req.empty() && req.back() == '\n') req.pop_back();
+                // 🚀 注意：这里绝对不能对 SAVE_FILE 的数据无脑 pop_back，因为末尾的换行可能是内容的一部分
+                if (!req.empty() && req.back() == '\n' && req.rfind("__SAVE_FILE__:", 0) != 0) req.pop_back();
 
                 if (req.rfind("__SUDO_PASS__:", 0) == 0) {
                     size_t nl = req.find('\n');
@@ -638,7 +710,9 @@ inline void run_backend_server(DCLState& state) {
                     break; 
                 }
 
-                write(cli, resp.c_str(), resp.size());
+                if (!resp.empty()) {
+                    write(cli, resp.c_str(), resp.size());
+                }
             }
             close(cli);
             _exit(0);
@@ -690,6 +764,7 @@ inline int run_cli_client_mode(const std::vector<std::string>& initial_cmds) {
             if (resp.find("__SYS_EXIT__") != std::string::npos) {
                 exit(0);
             }
+            
             size_t cwd_pos = resp.find("__CWD__:");
             if (cwd_pos != std::string::npos) {
                 size_t nl_pos = resp.find('\n', cwd_pos);
@@ -767,6 +842,61 @@ inline int run_cli_client_mode(const std::vector<std::string>& initial_cmds) {
             exit(0); 
         }
 
+        // 🚀 核心改造：接收后端的 nano 请求，在前端本地启动内存版 nano_cmd
+        size_t nano_pos = resp.find("__REQ_NANO__:");
+        if (nano_pos != std::string::npos) {
+            std::string target_path = resp.substr(nano_pos + 13);
+            while (!target_path.empty() && (target_path.back() == '\n' || target_path.back() == '\r')) {
+                target_path.pop_back();
+            }
+            
+            // 1. 向后端拿文件内容
+            std::string get_req = "__GET_FILE__:" + target_path + "\n";
+            write(fd, get_req.c_str(), get_req.size());
+            
+            char file_buf[65536] = {0};
+            ssize_t fn = read(fd, file_buf, sizeof(file_buf) - 1);
+            g_nano_edit_content = "";
+            if (fn > 0) {
+                std::string file_resp(file_buf);
+                if (file_resp.rfind("__FILE_DATA__:", 0) == 0) {
+                    g_nano_edit_content = file_resp.substr(14);
+                }
+            }
+            
+            // 2. 调用前端的 nano_cmd
+            g_nano_edit_result = g_nano_edit_content; // 初始化
+            DCLState dummy_state;
+            nano_cmd(dummy_state, target_path); 
+            
+            // 3. 发送修改后的内容到后端（带长度校验）
+            std::string save_req = "__SAVE_FILE__:" + target_path + "\n" + std::to_string(g_nano_edit_result.size()) + "\n" + g_nano_edit_result;
+            
+            size_t total_written = 0;
+            while (total_written < save_req.size()) {
+                ssize_t w = write(fd, save_req.c_str() + total_written, save_req.size() - total_written);
+                if (w <= 0) break;
+                total_written += w;
+            }
+            
+            // 4. 等待后端确认
+            char ack_buf[256] = {0};
+            read(fd, ack_buf, sizeof(ack_buf) - 1);
+            
+            // 5. 彻底大扫除，恢复终端
+            tcflush(STDIN_FILENO, TCIFLUSH);
+            
+            DCLKeyboard::set_context(KeyContext::MAIN);
+            if (cwd == "/") {
+                new_prompt = "\033[1;35m>>> \033[0m";
+            } else {
+                new_prompt = "\033[1;35m" + cwd + ">> \033[0m";
+            }
+            std::cout << new_prompt << std::flush;
+            DCLKeyboard::set_prompt(new_prompt);
+            continue;
+        }
+
         if (is_quitting) {
             close(fd);
             exit(0);
@@ -802,7 +932,7 @@ inline int run_cli_client_mode(const std::vector<std::string>& initial_cmds) {
             }
         }
 
-        std::string cwd = "/";
+        
         std::string real_output = "";
 
         size_t cwd_pos = resp.find("__CWD__:");
@@ -816,7 +946,6 @@ inline int run_cli_client_mode(const std::vector<std::string>& initial_cmds) {
             real_output = resp;
         }
 
-        std::string new_prompt = "";
         if (cwd == "/") {
             new_prompt = "\033[1;35m>>> \033[0m";
         } else {
@@ -979,6 +1108,8 @@ inline void load_xyn_to_cli(const std::string& vfs_path,
     std::stringstream ss(content);
     std::string raw_line;
 
+    size_t global_arg_idx = 0;
+
     while (std::getline(ss, raw_line)) {
         if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
 
@@ -994,13 +1125,12 @@ inline void load_xyn_to_cli(const std::string& vfs_path,
         if (line.empty() || line[0] == '#' || line.rfind("//", 0) == 0) continue;
 
         {
-            size_t arg_idx = 0;
             size_t pos = 0;
             while ((pos = line.find("$!", pos)) != std::string::npos) {
-                std::string rep = (arg_idx < script_args.size()) ? script_args[arg_idx] : "";
+                std::string rep = (global_arg_idx < script_args.size()) ? script_args[global_arg_idx] : "";
                 line.replace(pos, 2, rep);
                 pos += rep.length();
-                arg_idx++;
+                global_arg_idx++;
             }
         }
 
@@ -1022,7 +1152,6 @@ inline void load_xyn_to_cli(const std::string& vfs_path,
                 if (fr.any_taken || fr.in_else) {
                     fr.branch_taken = false;
                 } else {
-                    // 🚀 修复 1：elif 的判断也要解析路径
                     bool result = xyn_eval_cond(line.substr(4), ctx, [](const std::string& p) {
                         std::string resolved = resolve_vfs_path_prefix(p);
                         return VFS::getInstance().get_node(resolved) != nullptr;
@@ -1043,7 +1172,6 @@ inline void load_xyn_to_cli(const std::string& vfs_path,
             bool parent_ok = ctx.should_exec();
             bool result = false;
             if (parent_ok) {
-                // 🚀 修复 2：if 的判断也要解析路径
                 result = xyn_eval_cond(cond_expr, ctx, [](const std::string& p) {
                     std::string resolved = resolve_vfs_path_prefix(p);
                     return VFS::getInstance().get_node(resolved) != nullptr;

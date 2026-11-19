@@ -47,7 +47,7 @@ static std::string g_alias_load_msg = "未尝试加载";
 static std::string g_alias_last_content = "";
 
 static void load_exec_alias(bool force_reload = false) {
-    const std::string cfg_path = "/xyby/data/exec.xyt";
+    const std::string cfg_path = "/xyby/data/exec.xyi";
 
     if (g_exec_alias_loaded && !force_reload) return;
     g_exec_alias_loaded = true;
@@ -283,43 +283,35 @@ std::string exec_cmd(DCLState& state, const std::vector<std::string>& cmd_args,
     }
     
     // ==========================================================
-    // 🚀 2. .xy 脚本：落盘后调用主程序执行，并带上参数
+    // 🚀 2. .xy 脚本：直接内部解释执行，避免 fork 外部进程导致锁冲突
     // ==========================================================
     if (ext == ".xy" || ext == ".xyv") {
-        std::string host_path = vfs_to_cache_path(vfs_target);
-        if (!dump_to_file(content, host_path)) {
-            return "错误: 无法创建执行缓存 " + host_path;
-        }
-        make_executable(host_path);
-        std::string abs_path = std::filesystem::absolute(host_path).string();
-
-        std::string runner_bin = "./Data_Command_Line.xy";
-#ifndef _WIN32
-        char exe_buf[1024];
-        ssize_t len = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
-        if (len != -1) {
-            exe_buf[len] = '\0';
-            std::string path_str(exe_buf);
-            std::string dir = path_str.substr(0, path_str.find_last_of('/'));
-            runner_bin = dir + "/Data_Command_Line.xy";
-        }
-#endif
+        std::string full_code;
         
-        // 🚀 核心改造：全面接入内核调度器
-        std::vector<std::string> spawn_args;
-        spawn_args.push_back(runner_bin); // 解释器
-        spawn_args.push_back(abs_path);    // 脚本
-        for (const auto& a : script_args) {
-            spawn_args.push_back(a);       // 附加参数
+        // 把参数当作全局变量注入进去
+        for (size_t k = 0; k < script_args.size(); ++k) {
+            full_code += "arg" + std::to_string(k + 1) + " = \"";
+            // 防止参数里出现引号导致转义失败
+            for (char c : script_args[k]) {
+                if (c == '"' || c == '\\') full_code += '\\';
+                full_code += c;
+            }
+            full_code += "\"\n";
         }
+        
+        full_code += content;
 
-        // 走统一的 spawn_process 托管
-        std::string res = spawn_process(spawn_args, runner_bin, false);
-
-        std::error_code ec;
-        std::filesystem::remove(host_path, ec);
-
-        return res;
+        try {
+            // 🚀 直接走内部解释器执行
+            execute_xy_code(full_code);
+            state.cmd = "exec";
+            state.path = vfs_target;
+            return "";
+        } catch (const std::exception& e) {
+            return "错误: 脚本执行异常: " + std::string(e.what());
+        } catch (...) {
+            return "错误: 脚本执行发生未知异常";
+        }
     }
 
     // ==========================================================

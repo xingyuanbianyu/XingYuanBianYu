@@ -105,8 +105,8 @@ static std::string strip_color(const std::string& s) {
 }
 
 static std::string user_config_path(const UserAccount& u) {
-    if (u.role == UserRole::R3_SYS_ADMIN) return "/usr/R3.xyt";
-    return "/usr/" + u.name + ".xyt";
+    if (u.role == UserRole::R3_SYS_ADMIN) return "/usr/R3.xyi";
+    return "/usr/" + u.name + ".xyi";
 }
 
 static std::string role_to_perm_type(UserRole r) {
@@ -215,7 +215,7 @@ void user_init() {
     std::vector<std::string> items = VFS::getInstance().list_directory("/usr");
     for (auto& raw : items) {
         std::string name = strip_color(raw);
-        if (name.size() < 4 || name.substr(name.size() - 4) != ".xyt") continue;
+        if (name.size() < 4 || name.substr(name.size() - 4) != ".xyi") continue;
         std::string path = "/usr/" + name;
         auto node = VFS::getInstance().get_node(path);
         if (!node || dynamic_cast<Directory*>(node.get())) continue;

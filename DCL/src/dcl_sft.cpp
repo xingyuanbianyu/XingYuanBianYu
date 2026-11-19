@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <sstream> // 🚀 引入 stringstream 用于目录补齐
 #include "../../VFS/include/vfs.h"
 
 // 🚀 引入获取用户名的外部函数（定义在 dcl_drt.cpp）
@@ -49,6 +50,24 @@ static std::string resolve_path_prefix_sft(const std::string& raw) {
     return raw;
 }
 
+// ============================================================
+// 🚀 辅助函数：一次性补齐 VFS 目录
+// ============================================================
+static bool sft_ensure_dir(const std::string& vfs_path) {
+    std::string norm = VFS::getInstance().normalize_path(vfs_path);
+    if (norm.empty() || norm == "/") return true;
+    std::stringstream ss(norm);
+    std::string seg, cur = "";
+    while (std::getline(ss, seg, '/')) {
+        if (seg.empty()) continue;
+        cur += "/" + seg;
+        if (!VFS::getInstance().get_node(cur)) {
+            VFS::getInstance().create_directory(cur);
+        }
+    }
+    return true;
+}
+
 std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
     if (args.empty()) {
         return "用法: \n  sft <名字> [-R|-L]\n  sft <源> \\ <目标>\n  sft <源> | <目标>\n  sft <旧名> / <新名>\n  sft <源> ! (移入回收站)";
@@ -89,7 +108,6 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
             return "错误: 参数过多。用法: sft <名字> [-R|-L]";
         }
 
-        // 修改点 1：使用新的解析函数
         std::string name = resolve_path_prefix_sft(args[0]);
         std::string flag = (args.size() == 2) ? args[1] : "";
 
@@ -114,6 +132,15 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
         }
 
         std::string vfs_name = VFS::getInstance().normalize_path(name);
+
+        // 🚀 核心新增：一次性补齐父目录
+        size_t last_slash = vfs_name.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            std::string parent = vfs_name.substr(0, last_slash);
+            if (!parent.empty() && parent != "/") {
+                sft_ensure_dir(parent);
+            }
+        }
 
         if (VFS::getInstance().get_node(vfs_name)) {
             return "错误: 目标已存在";
@@ -144,7 +171,6 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
         src_name += args[i];
     }
 
-    // 修改点 2：使用新的解析函数
     src_name = resolve_path_prefix_sft(src_name);
     std::string vfs_src = VFS::getInstance().normalize_path(src_name);
 
@@ -172,7 +198,7 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
         
         // 2. 确保回收站目录存在
         if (!VFS::getInstance().get_node(trash_dir)) {
-            VFS::getInstance().create_directory(trash_dir);
+            sft_ensure_dir(trash_dir);
         }
 
         // 3. 获取源文件名
@@ -203,7 +229,6 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
             dst_name += args[i];
         }
 
-        // 修改点 3：使用新的解析函数
         dst_name = resolve_path_prefix_sft(dst_name);
         vfs_dst = VFS::getInstance().normalize_path(dst_name);
 
@@ -229,6 +254,15 @@ std::string sft_cmd(DCLState& state, const std::vector<std::string>& args) {
                     return "错误: 重命名目标已存在 (" + vfs_dst + ")";
                 }
             }
+        }
+    }
+
+    // 🚀 核心新增：无论哪种操作，执行前先一次性补齐目标路径的父目录
+    size_t last_slash_dst = vfs_dst.find_last_of('/');
+    if (last_slash_dst != std::string::npos) {
+        std::string parent = vfs_dst.substr(0, last_slash_dst);
+        if (!parent.empty() && parent != "/") {
+            sft_ensure_dir(parent);
         }
     }
 

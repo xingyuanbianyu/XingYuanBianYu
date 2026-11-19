@@ -19,34 +19,26 @@
 #include <errno.h>
 
 extern int current_v_pid;
-
+std::string g_nano_edit_content = ""; // 供前端传入原文件内容
+std::string g_nano_edit_result = "";  // 供前端传出修改后的内容
 // ================= 🚀 SIGWINCH 全局标志 =================
 static volatile sig_atomic_t g_winch = 0;
 static void on_winch(int) { g_winch = 1; }
 
-// ================= VFS 读写辅助 =================
 static std::vector<std::string> read_lines_from_vfs(const std::string& vfs_path) {
     std::vector<std::string> lines;
-
-    // 🚀 【核心修复 1】先用 get_node 确认文件存在，避免把 "错误" 前缀误判为读取失败
-    auto node = VFS::getInstance().get_node(vfs_path);
-    if (!node) return lines;                                        // 文件不存在
-    if (std::dynamic_pointer_cast<Directory>(node)) return lines;    // 是目录
-
-    std::string content = VFS::getInstance().read_file(vfs_path);
-
-    // 🚀 空文件是合法的，直接返回空行向量
+    std::string content = g_nano_edit_content; // 🚀 直接读内存
     if (content.empty()) return lines;
 
     std::stringstream ss(content);
     std::string line;
     while (std::getline(ss, line)) lines.push_back(line);
+    // 移除末尾多余的空行
     if (!content.empty() && content.back() == '\n' && !lines.empty() && lines.back().empty())
         lines.pop_back();
     return lines;
 }
 
-// 🚀 保存：返回空字符串=成功，非空=错误信息
 static std::string write_lines_to_vfs(const std::string& vfs_path,
                                        const std::vector<std::string>& lines) {
     std::string content;
@@ -54,8 +46,8 @@ static std::string write_lines_to_vfs(const std::string& vfs_path,
         content += lines[i];
         if (i + 1 < lines.size()) content += "\n";
     }
-    // VFS::write_file 返回空=成功，非空=错误信息
-    return VFS::getInstance().write_file(vfs_path, content);
+    g_nano_edit_result = content; // 🚀 结果存内存，返回空表示成功
+    return ""; 
 }
 
 // ================= 屏幕 / UTF-8 辅助 =================
@@ -241,7 +233,7 @@ std::string nano_cmd(DCLState& state, const std::string& vfs_path) {
         int W, H;
         get_term_size(W, H);
         std::ostringstream out;
-        out << "\033[2J\033[H";
+        out << "\033[H";
         out << "  ╔══════════ 星缘编辑器帮助 ══════════╗\n";
         out << "  ║  ^G   显示本帮助                  ║\n";
         out << "  ║  ^O   保存文件                    ║\n";
@@ -259,7 +251,7 @@ std::string nano_cmd(DCLState& state, const std::string& vfs_path) {
         std::cout << out.str() << std::flush;
         unsigned char any;
         ::read(STDIN_FILENO, &any, 1);
-        std::cout << "\033[2J\033[H" << std::flush;
+        std::cout << "\033[H" << std::flush;
     };
 
     render();

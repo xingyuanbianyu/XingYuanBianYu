@@ -21,10 +21,10 @@ extern std::string drt_get_name_by_uid(int uid);
 std::function<std::string(const std::string&)> g_input_pid_query_cb = nullptr;
 std::function<std::string(const std::string&)> g_input_exec_vfs_cb = nullptr;
 
-static const char* VFS_URL_FILE  = "/xyby/data/url.xyt";
+static const char* VFS_URL_FILE  = "/xyby/data/url.xyi";
 static const char* VFS_PKG_DIR   = "/data/packages";
 static const char* VFS_REPO_DIR  = "/xyby/repo";
-static const char* VFS_INDEX     = "/xyby/repo/index.xyt";
+static const char* VFS_INDEX     = "/xyby/repo/index.xyo";
 static const char* DEFAULT_URL   = "xy://local/%name%";
 
 struct PackageMeta {
